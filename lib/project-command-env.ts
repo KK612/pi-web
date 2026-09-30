@@ -12,6 +12,7 @@ const HOST_EXTENSION_NAME = "pi-web-project-command-environment";
 const HOST_EXTENSION_PATH = `<inline:${HOST_EXTENSION_NAME}>`;
 // Pi's own abort path settles well within this once the process tree is gone.
 const ABORT_SETTLE_GRACE_MS = 1000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 type ProjectShellSettings = {
   getShellCommandPrefix(): string | undefined;
@@ -85,7 +86,7 @@ export function createProjectCommandBashOperations(
         agentBinDir,
         platform,
       );
-      const { onData, signal } = executionOptions;
+      const { onData, signal, timeout } = executionOptions;
       let released = false;
       const execution = localOperations.exec(command, cwd, {
         ...executionOptions,
@@ -96,26 +97,36 @@ export function createProjectCommandBashOperations(
           if (!released) onData(data);
         },
       });
-      if (!signal) return execution;
+      // Pi rejects any other timeout before it starts the command.
+      const timeoutMs = typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0
+        ? timeout * 1000
+        : undefined;
+      if (!signal && timeoutMs === undefined) return execution;
 
-      // On Stop, pi kills the shell's process tree but then keeps reading until
-      // every inherited stdout/stderr handle falls idle. A descendant the kill
-      // cannot reach (its own session on POSIX, an orphan `taskkill /T` misses
-      // on Windows) can keep writing and hold the tool call, and with it Stop
-      // and any steering, until the script ends on its own (#647).
+      // On Stop or a timeout, pi kills the shell's process tree but then keeps
+      // reading until every inherited stdout/stderr handle falls idle. A
+      // descendant the kill cannot reach (its own session on POSIX, an orphan
+      // `taskkill /T` misses on Windows) can keep writing and hold the tool
+      // call, and with it Stop and any steering, until the script ends on its
+      // own (#647). The errors are pi's own, so the bash tool reports them as
+      // "Command aborted" and "Command timed out".
       return new Promise<BashExecResult>((resolve, reject) => {
-        let graceTimer: ReturnType<typeof setTimeout> | undefined;
+        const timers: ReturnType<typeof setTimeout>[] = [];
         const release = () => {
           released = true;
-          if (graceTimer) clearTimeout(graceTimer);
-          signal.removeEventListener("abort", onAbort);
+          for (const timer of timers) clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
         };
-        const onAbort = () => {
-          graceTimer = setTimeout(() => {
+        const releaseAfter = (delayMs: number, error: Error) => {
+          timers.push(setTimeout(() => {
             release();
-            reject(new Error("aborted"));
-          }, abortSettleGraceMs);
+            reject(error);
+          }, Math.min(delayMs, MAX_TIMER_DELAY_MS)));
         };
+        const onAbort = () => releaseAfter(abortSettleGraceMs, new Error("aborted"));
+        if (timeoutMs !== undefined) {
+          releaseAfter(timeoutMs + abortSettleGraceMs, new Error(`timeout:${timeout}`));
+        }
         execution.then((result) => {
           release();
           resolve(result);
@@ -123,8 +134,8 @@ export function createProjectCommandBashOperations(
           release();
           reject(error);
         });
-        if (signal.aborted) onAbort();
-        else signal.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
       });
     },
   };
