@@ -172,3 +172,35 @@ test("bulk toggles reject malformed package lists and other actions", async () =
   const remove = await postPlugins({ action: "remove", packages: [{ source: "npm:x", scope: "global" }] });
   assert.equal(remove.status, 400);
 });
+
+test("bulk disable leaves a filtered package alone and says why", async () => {
+  const [alpha, beta] = await Promise.all(["bulk-alpha", "bulk-beta"].map(makePackage));
+  const filtered = { source: beta, extensions: ["extensions/index.ts"] };
+  await writeFile(settingsPath, JSON.stringify({ packages: [alpha, filtered] }));
+
+  const response = await postPlugins({
+    action: "disable",
+    packages: [{ source: alpha, scope: "global" }, { source: beta, scope: "global" }],
+  });
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.results[0].error, undefined);
+  assert.match(body.results[1].error, /resource filters/);
+  // Disabling would have emptied its lists, and enabling cannot restore them.
+  assert.deepEqual(await readPackages(), [{ source: alpha, ...off }, filtered]);
+});
+
+test("enabling keeps an entry's own settings such as autoload", async () => {
+  const [alpha, beta] = await Promise.all(["bulk-alpha", "bulk-beta"].map(makePackage));
+  await writeFile(settingsPath, JSON.stringify({
+    packages: [{ source: alpha, autoload: false, ...off }, { source: beta, autoload: false, ...off }],
+  }));
+
+  const single = await postPlugins({ action: "enable", source: alpha, scope: "global" });
+  assert.equal(single.status, 200);
+  const bulk = await postPlugins({ action: "enable", packages: [{ source: beta, scope: "global" }] });
+  assert.equal(bulk.status, 200);
+
+  assert.deepEqual(await readPackages(), [{ source: alpha, autoload: false }, { source: beta, autoload: false }]);
+});

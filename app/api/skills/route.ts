@@ -47,6 +47,9 @@ function toggleSkillFile(
   disableModelInvocation: boolean,
   allowedRoots: Set<string>,
 ): { status: number; error: string } | null {
+  // Skills are SKILL.md or *.md files. The allowed roots also hold settings,
+  // auth.json and project files, whose top a frontmatter edit would break.
+  if (path.extname(filePath).toLowerCase() !== ".md") return { status: 400, error: "Not a skill file" };
   if (!existsSync(filePath)) return { status: 404, error: "file not found" };
   if (!isExistingFilePathAllowed(filePath, allowedRoots)) {
     return { status: 403, error: "Access denied" };

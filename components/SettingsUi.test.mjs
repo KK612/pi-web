@@ -192,5 +192,5 @@ test("skills and plugins put their bulk switches above the sidebar list", () => 
   assert.match(templateSource, /className="config-sidebar-bulk-actions"/);
   assert.match(cssSource, /\.config-sidebar-bulk-actions \{[\s\S]*?flex-shrink: 0[\s\S]*?border-bottom: 1px solid var\(--border\)/);
   assert.match(cssSource, /\.config-sidebar-bulk-buttons > \.config-button \{[\s\S]*?flex: 1 1 0/);
-  assert.match(cssSource, /\.config-sidebar-bulk-error \{[\s\S]*?white-space: pre-wrap/);
+  assert.match(cssSource, /\.config-sidebar-bulk-error,\s*\.config-sidebar-bulk-note \{[\s\S]*?white-space: pre-wrap/);
 });

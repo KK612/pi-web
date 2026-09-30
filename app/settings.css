@@ -139,7 +139,8 @@
 }
 
 /* Three lines, then scroll: the phone layout gives the whole sidebar 190px. */
-.config-sidebar-bulk-error {
+.config-sidebar-bulk-error,
+.config-sidebar-bulk-note {
   max-height: 4.2em;
   overflow-y: auto;
   color: #ef4444;
@@ -147,6 +148,10 @@
   line-height: 1.4;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.config-sidebar-bulk-note {
+  color: var(--text-muted);
 }
 
 .config-sidebar-group {

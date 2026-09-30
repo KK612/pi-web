@@ -68,29 +68,49 @@ function getDisabledPackages(settingsManager: SettingsManager): Map<string, bool
 }
 
 /**
+ * An enabled entry that is an object: it filters the package's resources, or
+ * sets `autoload`. Disabling replaces its resource lists, and Pi Web keeps no
+ * copy, so enabling it again cannot bring the filters back.
+ */
+function hasEntrySettings(entry: PackageSource): boolean {
+  return typeof entry === "object" && !isDisabledPackage(entry);
+}
+
+const FILTERED_PACKAGE_ERROR =
+  "Has resource filters, which disabling would remove; use the package's own switch";
+
+/**
  * Disables or re-enables the given packages of one scope with a single
- * settings write, and returns the sources that scope does not configure.
+ * settings write. Returns the sources that scope does not configure, and with
+ * `keepEntrySettings` the ones left enabled because disabling would drop
+ * their filters.
  *
- * An entry already in the requested state is left exactly as it is: enabling
- * rewrites the entry to its bare source, so re-enabling a package that is only
- * filtered would silently drop its resource filters.
+ * An entry already in the requested state is left exactly as it is, and
+ * enabling keeps every key except the emptied resource lists (`autoload` on a
+ * project entry, say), so neither drops what the entry configures.
  */
 function setPackagesDisabled(
   settingsManager: SettingsManager,
   sources: readonly string[],
   scope: PluginScope,
   disabled: boolean,
-): Set<string> {
+  { keepEntrySettings = false }: { keepEntrySettings?: boolean } = {},
+): { missing: Set<string>; kept: Set<string> } {
   const current = scope === "project"
     ? settingsManager.getProjectSettings().packages ?? []
     : settingsManager.getGlobalSettings().packages ?? [];
   const missing = new Set(sources);
+  const kept = new Set<string>();
   let changed = false;
   const next = current.map((entry): PackageSource => {
     const source = getPackageSource(entry);
     if (!sources.includes(source)) return entry;
     missing.delete(source);
     if (isDisabledPackage(entry) === disabled) return entry;
+    if (disabled && keepEntrySettings && hasEntrySettings(entry)) {
+      kept.add(source);
+      return entry;
+    }
     changed = true;
     if (disabled) {
       return {
@@ -101,20 +121,26 @@ function setPackagesDisabled(
         themes: [],
       };
     }
-    return source;
+    if (typeof entry === "string") return source;
+    const rest = { ...entry };
+    delete rest.extensions;
+    delete rest.skills;
+    delete rest.prompts;
+    delete rest.themes;
+    return Object.keys(rest).length > 1 ? rest : source;
   });
   if (changed) {
     if (scope === "project") settingsManager.setProjectPackages(next);
     else settingsManager.setPackages(next);
   }
-  return missing;
+  return { missing, kept };
 }
 
 /**
  * The bulk form of enable/disable behind the panel's "Enable all" /
  * "Disable all". Each package gets its own result, so one the route refuses
- * (an untrusted project, a package removed since the panel loaded) does not
- * stop the rest.
+ * (an untrusted project, a package removed since the panel loaded, a filtered
+ * package it would have to strip to disable) does not stop the rest.
  *
  * SettingsManager never throws a failed load or write: it skips the write,
  * records the error, and `flush()` still resolves. Those errors are read back
@@ -137,9 +163,12 @@ async function setPackageListDisabled(
       }
       continue;
     }
-    for (const source of setPackagesDisabled(settingsManager, sources, scope, disabled)) {
-      errors.set(keyFor(source, scope), "Package is not configured");
-    }
+    // "Disable all" must not wipe filters the operator set up by hand.
+    const { missing, kept } = setPackagesDisabled(settingsManager, sources, scope, disabled, {
+      keepEntrySettings: true,
+    });
+    for (const source of missing) errors.set(keyFor(source, scope), "Package is not configured");
+    for (const source of kept) errors.set(keyFor(source, scope), FILTERED_PACKAGE_ERROR);
   }
   await settingsManager.flush();
   const settingsErrors = new Map<string, string>();

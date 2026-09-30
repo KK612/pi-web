@@ -58,13 +58,22 @@ function packageKey(pkg: Pick<PluginPackageInfo, "source" | "scope">): string {
 /**
  * The packages "Enable all" / "Disable all" would switch: every configured
  * package, global and project, not already in that state. Standalone
- * extensions have no switch here, so they are never included.
+ * extensions have no switch here, so they are never included. "Disable all"
+ * also leaves out a filtered package: disabling empties its resource lists and
+ * nothing keeps the filters, so that stays a decision for its own switch.
  */
-export function packagesToSwitch<T extends Pick<PluginPackageInfo, "disabled">>(
+export function packagesToSwitch<T extends Pick<PluginPackageInfo, "disabled" | "filtered">>(
   packages: T[],
   enabled: boolean,
 ): T[] {
-  return packages.filter((pkg) => pkg.disabled === enabled);
+  return packages.filter((pkg) => pkg.disabled === enabled && (enabled || !pkg.filtered));
+}
+
+/** Enabled filtered packages, which "Disable all" leaves on. */
+export function filteredPackagesKeptOn<T extends Pick<PluginPackageInfo, "disabled" | "filtered">>(
+  packages: T[],
+): T[] {
+  return packages.filter((pkg) => !pkg.disabled && pkg.filtered);
 }
 
 function extensionKey(extension: PluginStandaloneExtensionInfo): string {
@@ -703,6 +712,7 @@ export function PluginsConfig({
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
   const [updateStatuses, setUpdateStatuses] = useState<Record<string, PluginUpdateResult>>({});
   const [checkingUpdates, setCheckingUpdates] = useState<Set<string>>(new Set());
   const [checkingAll, setCheckingAll] = useState(false);
@@ -725,6 +735,7 @@ export function PluginsConfig({
     setLoading(true);
     setError(null);
     setBulkError(null);
+    setBulkNote(null);
     try {
       const res = await fetch(`/api/plugins?cwd=${encodeURIComponent(cwd)}`);
       const next = (await res.json()) as PluginsResponse & { error?: string };
@@ -885,11 +896,13 @@ export function PluginsConfig({
   const setAllPackages = useCallback(async (enabled: boolean) => {
     const targets = packagesToSwitch(packages, enabled);
     if (targets.length === 0) return;
+    const keptOn = enabled ? 0 : filteredPackagesKeptOn(packages).length;
     const action = enabled ? "enable" : "disable";
     setBusyKey(`bulk:${action}`);
     setActionError(null);
     setActionMessage(null);
     setBulkError(null);
+    setBulkNote(null);
     try {
       const res = await fetch("/api/plugins", {
         method: "POST",
@@ -905,6 +918,7 @@ export function PluginsConfig({
       const { results, ...plugins } = next as PluginsBulkResponse;
       setData(plugins);
       const failures = results.filter((result) => result.error);
+      if (keptOn > 0) setBulkNote(t("plugins.bulkKeptFiltered", { count: keptOn }));
       if (failures.length < results.length) {
         const message = enabled ? t("plugins.bulkEnabled") : t("plugins.bulkDisabled");
         setActionMessage(sessionId ? `${message} ${t("agents.reloadRequired")}` : message);
@@ -990,8 +1004,11 @@ export function PluginsConfig({
           <ConfigSidebar>
             {!error && packages.length > 0 && (
               <ConfigSidebarBulkActions
-                status={bulkError && (
-                  <div role="alert" className="config-sidebar-bulk-error">{bulkError}</div>
+                status={(bulkError || bulkNote) && (
+                  <>
+                    {bulkNote && <div role="status" className="config-sidebar-bulk-note">{bulkNote}</div>}
+                    {bulkError && <div role="alert" className="config-sidebar-bulk-error">{bulkError}</div>}
+                  </>
                 )}
               >
                 <ConfigButton

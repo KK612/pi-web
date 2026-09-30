@@ -8,18 +8,26 @@ const jiti = createJiti(import.meta.url, {
   jsx: { runtime: "automatic" },
   tsconfigPaths: true,
 });
-const { packagesToSwitch } = await jiti.import("./PluginsConfig.tsx");
+const { filteredPackagesKeptOn, packagesToSwitch } = await jiti.import("./PluginsConfig.tsx");
 
 const packages = [
-  { source: "npm:global-on", scope: "global", disabled: false },
-  { source: "npm:global-off", scope: "global", disabled: true },
-  { source: "npm:project-on", scope: "project", disabled: false },
+  { source: "npm:global-on", scope: "global", disabled: false, filtered: false },
+  { source: "npm:global-off", scope: "global", disabled: true, filtered: true },
+  { source: "npm:project-on", scope: "project", disabled: false, filtered: false },
 ];
 
 test("bulk buttons target every scope's packages that would change", () => {
   assert.deepEqual(packagesToSwitch(packages, true).map((pkg) => pkg.source), ["npm:global-off"]);
   assert.deepEqual(packagesToSwitch(packages, false).map((pkg) => pkg.source), ["npm:global-on", "npm:project-on"]);
   assert.deepEqual(packagesToSwitch(packages.filter((pkg) => !pkg.disabled), true), []);
+});
+
+test("Disable all leaves an enabled filtered package on and says so", () => {
+  // Disabling empties its resource lists, and nothing would bring the filters back.
+  const withFiltered = [...packages, { source: "npm:filtered-on", scope: "global", disabled: false, filtered: true }];
+  assert.deepEqual(packagesToSwitch(withFiltered, false).map((pkg) => pkg.source), ["npm:global-on", "npm:project-on"]);
+  assert.deepEqual(filteredPackagesKeptOn(withFiltered).map((pkg) => pkg.source), ["npm:filtered-on"]);
+  assert.match(source, /if \(keptOn > 0\) setBulkNote\(t\("plugins\.bulkKeptFiltered", \{ count: keptOn \}\)\);/);
 });
 
 test("the panel sends one request naming each package and its scope", () => {

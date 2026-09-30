@@ -105,3 +105,18 @@ test("a malformed batch is rejected before any file is edited", async () => {
   assert.equal((await patchSkills({ filePaths: [skill], disableModelInvocation: "yes" })).status, 400);
   assert.equal(await readFile(skill, "utf8"), before);
 });
+
+test("only markdown files are edited, however they are named in the request", async () => {
+  // auth.json and settings.json sit inside the agent dir, which the route
+  // allows; a frontmatter block at their top would break them.
+  const authPath = join(agentDir, "auth.json");
+  const auth = JSON.stringify({ provider: { type: "api_key", key: "test" } });
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(authPath, auth);
+
+  const single = await patchSkills({ filePath: authPath, disableModelInvocation: true });
+  assert.equal(single.status, 400);
+  const batch = await patchSkills({ filePaths: [authPath], disableModelInvocation: true });
+  assert.deepEqual(await batch.json(), { results: [{ filePath: authPath, error: "Not a skill file" }] });
+  assert.equal(await readFile(authPath, "utf8"), auth);
+});
