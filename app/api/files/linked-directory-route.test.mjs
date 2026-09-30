@@ -153,3 +153,24 @@ test("allow-link grants only the target the listing showed", async (t) => {
   assert.equal((await request("GET", path.join(hub, "second"), "list")).status, 403);
   assert.equal((await request("GET", link, "list")).status, 403);
 });
+
+test("a `..` carried inside an encoded segment cannot climb out through a link", async (t) => {
+  const fixture = createHub(t);
+  if (!fixture) return;
+  const { hub, elsewhere } = fixture;
+  // The filesystem resolves hub/linked/../x from the link target, reaching the
+  // directory beside `elsewhere`; lexically it names hub/x, which exists too.
+  const beside = path.join(path.dirname(elsewhere), "beside.txt");
+  fs.writeFileSync(beside, "outside");
+  fs.writeFileSync(path.join(hub, "beside.txt"), "inside");
+  t.after(() => fs.rmSync(beside, { force: true }));
+
+  // `%2F` survives URL parsing, so the catch-all receives one decoded segment.
+  const segments = [...encodeFilePathForApi(hub).split("/").map(decodeURIComponent), "linked/../beside.txt"];
+  const response = await GET(
+    new NextRequest(`http://localhost/api/files/x?type=read`, { headers: { host: "localhost" } }),
+    { params: Promise.resolve({ path: segments }) },
+  );
+  assert.equal(response.status, 403);
+  assert.deepEqual(await response.json(), { error: "Access denied" });
+});

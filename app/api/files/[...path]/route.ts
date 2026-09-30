@@ -452,6 +452,13 @@ export async function GET(
   try {
     const { path: segments } = await params;
     const filePath = filePathFromApiSegments(segments);
+    // Authorization collapses `..` lexically, but the filesystem applies it
+    // after following links, so `link/../x` names a file beside the link's
+    // target, outside the roots. URL parsing already drops real `..` segments;
+    // only an encoded slash inside a segment still carries one here.
+    if (filePath.split(/[\\/]/).includes("..")) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
     const rawType = request.nextUrl.searchParams.get("type") ?? "list";
     const type = parseFileRequestType(rawType);
     if (!type) {
