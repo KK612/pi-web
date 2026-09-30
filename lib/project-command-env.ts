@@ -10,6 +10,8 @@ import { join } from "node:path";
 
 const HOST_EXTENSION_NAME = "pi-web-project-command-environment";
 const HOST_EXTENSION_PATH = `<inline:${HOST_EXTENSION_NAME}>`;
+// Pi's own abort path settles well within this once the process tree is gone.
+const ABORT_SETTLE_GRACE_MS = 1000;
 
 type ProjectShellSettings = {
   getShellCommandPrefix(): string | undefined;
@@ -17,12 +19,15 @@ type ProjectShellSettings = {
 };
 
 type ProjectCommandBashOperationsOptions = {
+  abortSettleGraceMs?: number;
   agentBinDir?: string;
   baseEnvironment?: NodeJS.ProcessEnv;
   localOperations?: BashOperations;
   platform?: NodeJS.Platform;
   shellPath?: string;
 };
+
+type BashExecResult = Awaited<ReturnType<BashOperations["exec"]>>;
 
 function isHostRuntimeVariable(name: string, platform: NodeJS.Platform): boolean {
   const comparableName = platform === "win32" ? name.toUpperCase() : name;
@@ -66,6 +71,7 @@ export function createProjectCommandBashOperations(
   options: ProjectCommandBashOperationsOptions = {},
 ): BashOperations {
   const {
+    abortSettleGraceMs = ABORT_SETTLE_GRACE_MS,
     agentBinDir = join(getAgentDir(), "bin"),
     baseEnvironment = process.env,
     localOperations = createLocalBashOperations({ shellPath: options.shellPath }),
@@ -79,9 +85,46 @@ export function createProjectCommandBashOperations(
         agentBinDir,
         platform,
       );
-      return localOperations.exec(command, cwd, {
+      const { onData, signal } = executionOptions;
+      let released = false;
+      const execution = localOperations.exec(command, cwd, {
         ...executionOptions,
         env: environment,
+        // Callers finalize their output once the command is released; a
+        // survivor must not append to it afterwards.
+        onData: (data) => {
+          if (!released) onData(data);
+        },
+      });
+      if (!signal) return execution;
+
+      // On Stop, pi kills the shell's process tree but then keeps reading until
+      // every inherited stdout/stderr handle falls idle. A descendant the kill
+      // cannot reach (its own session on POSIX, an orphan `taskkill /T` misses
+      // on Windows) can keep writing and hold the tool call, and with it Stop
+      // and any steering, until the script ends on its own (#647).
+      return new Promise<BashExecResult>((resolve, reject) => {
+        let graceTimer: ReturnType<typeof setTimeout> | undefined;
+        const release = () => {
+          released = true;
+          if (graceTimer) clearTimeout(graceTimer);
+          signal.removeEventListener("abort", onAbort);
+        };
+        const onAbort = () => {
+          graceTimer = setTimeout(() => {
+            release();
+            reject(new Error("aborted"));
+          }, abortSettleGraceMs);
+        };
+        execution.then((result) => {
+          release();
+          resolve(result);
+        }, (error: unknown) => {
+          release();
+          reject(error);
+        });
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
       });
     },
   };
