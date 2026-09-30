@@ -7,7 +7,6 @@ import { ImagePreview } from "./ImagePreview";
 import { ThinkingIcon } from "./ThinkingIcon";
 import { copyText } from "@/lib/clipboard";
 import { useI18n } from "@/hooks/useI18n";
-import { useIsMobile } from "@/hooks/useIsMobile";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
 import { getAssistantErrorMessage, getThinkingPreview, isAssistantTruncated, isEmptyThinkingBlock } from "@/lib/message-display";
 import { parseUnifiedPatch, type SplitDiffCell, type SplitDiffFile } from "@/lib/patch";
@@ -322,7 +321,6 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
   onEditContent?: (message: UserMessage, entryId: string) => void;
 }) {
   const { t } = useI18n();
-  const isMobile = useIsMobile();
   const [hovered, setHovered] = useState(false);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -485,12 +483,12 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
       {(time || canFork || canEdit || true) && (
         <div style={{
           display: "flex", alignItems: "center", justifyContent: "flex-end",
-          gap: 6, marginTop: 3, flexWrap: isMobile ? "wrap" : undefined,
+          gap: 6, marginTop: 3,
         }}>
           <div style={{
             display: "flex", gap: 3,
-            opacity: (hovered || isMobile) ? 1 : 0,
-            pointerEvents: (hovered || isMobile) ? "auto" : "none",
+            opacity: hovered ? 1 : 0,
+            pointerEvents: hovered ? "auto" : "none",
             transition: "opacity 0.12s",
           }}>
             <button
@@ -498,7 +496,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                title={t("i18n.copyMessage")}
               style={{
                 display: "flex", alignItems: "center", gap: 4,
-                padding: "3px 8px", height: isMobile ? 44 : 22, minWidth: isMobile ? 44 : undefined,
+                padding: "3px 8px", height: 22,
                 background: "none", border: "none",
                 borderRadius: 5,
                 color: copied ? "var(--accent)" : "var(--text-dim)",
@@ -526,8 +524,8 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
           {(canFork || canEdit) && (
             <div style={{
               display: "flex", gap: 3,
-              opacity: (hovered || forking || isMobile) ? 1 : 0,
-              pointerEvents: (hovered || forking || isMobile) ? "auto" : "none",
+              opacity: (hovered || forking) ? 1 : 0,
+              pointerEvents: (hovered || forking) ? "auto" : "none",
               transition: "opacity 0.12s",
             }}>
               {canEdit && (
@@ -536,7 +534,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                    title={t("i18n.editFromHereTitle")}
                   style={{
                     display: "flex", alignItems: "center", gap: 4,
-                    padding: "3px 8px", height: isMobile ? 44 : 22, minWidth: isMobile ? 44 : undefined,
+                    padding: "3px 8px", height: 22,
                     background: "none", border: "none",
                     borderRadius: 5,
                     color: "var(--text-dim)",
@@ -562,7 +560,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
                    title={forking ? t("i18n.creatingSession") : t("i18n.newSessionTitle")}
                   style={{
                     display: "flex", alignItems: "center", gap: 4,
-                    padding: "3px 8px", height: isMobile ? 44 : 22, minWidth: isMobile ? 44 : undefined,
+                    padding: "3px 8px", height: 22,
                     background: "none", border: "none",
                     borderRadius: 5,
                     color: forking ? "var(--accent)" : "var(--text-dim)",

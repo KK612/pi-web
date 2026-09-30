@@ -12,7 +12,6 @@ import { chromium } from "playwright";
 import { checkFilePanel, filePanelFixture } from "./file-panel.mjs";
 import { checkExtensionDialogs, extensionSource } from "./extension-dialog.mjs";
 import { checkChatAppearance } from "./chat-appearance.mjs";
-import { checkMobileHistoryEdit } from "./history-edit-mobile.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const mode = process.env.E2E_SERVER_MODE || "dev";
@@ -219,13 +218,9 @@ try {
     console.log("PASS: external session-file appends are visible on force/mount reads");
   }
 
-  browser = await chromium.launch({ channel: process.env.E2E_BROWSER_CHANNEL || undefined });
-  const mobileHistoryOnly = process.env.E2E_MOBILE_HISTORY_ONLY === "1";
-  const viewports = mobileHistoryOnly
-    ? [{ width: 390, height: 844 }, { width: 320, height: 568 }]
-    : [{ width: 1280, height: 800 }, { width: 390, height: 844 }, { width: 320, height: 568 }];
-  for (const viewport of viewports) {
-    context = await browser.newContext({ viewport, locale: "en-US", hasTouch: viewport.width <= 640, isMobile: viewport.width <= 640 });
+  browser = await chromium.launch();
+  for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+    context = await browser.newContext({ viewport, locale: "en-US" });
     await context.tracing.start({ screenshots: true, snapshots: true });
     page = await context.newPage();
     page.setDefaultTimeout(30_000);
@@ -238,16 +233,6 @@ try {
       const url = new URL(response.url());
       if (url.pathname === `/api/sessions/${LONG}/context` && url.searchParams.has("before")) olderResponses.push(response);
     });
-    if (mobileHistoryOnly || viewport.width === 320) {
-      await page.goto(`${base}/?session=${RICH}`, { waitUntil: "domcontentloaded" });
-      await checkMobileHistoryEdit(page, artifacts, viewport.width);
-      assert.deepEqual(errors, [], `Browser errors at width ${viewport.width}`);
-      await context.tracing.stop();
-      await context.close();
-      context = undefined;
-      page = undefined;
-      continue;
-    }
     const stateReady = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/sessions/${LONG}/state`);
     await page.goto(`${base}/?session=${LONG}`, { waitUntil: "domcontentloaded" });
     assert.equal((await stateReady).status(), 200);
@@ -303,7 +288,6 @@ try {
     });
     await page.goto(`${base}/?session=${RICH}`, { waitUntil: "domcontentloaded" });
     await page.locator("strong").filter({ hasText: "E2E markdown" }).waitFor();
-    if (viewport.width === 390) await checkMobileHistoryEdit(page, artifacts, viewport.width);
     await page.locator("pre").filter({ hasText: "console.log('E2E code');" }).waitFor();
     await page.getByText("E2E final answer", { exact: true }).waitFor();
     const processDetails = page.getByRole("button", { name: /^Process details/ });
