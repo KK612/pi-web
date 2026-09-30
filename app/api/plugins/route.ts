@@ -21,7 +21,9 @@ import type {
   PluginResourceKind,
   PluginScope,
   PluginStandaloneExtensionInfo,
+  PluginsBulkResponse,
   PluginsResponse,
+  PluginToggleResult,
 } from "@/lib/api-types";
 
 export const dynamic = "force-dynamic";
@@ -65,18 +67,30 @@ function getDisabledPackages(settingsManager: SettingsManager): Map<string, bool
   return disabled;
 }
 
-function setPackageDisabled(
+/**
+ * Disables or re-enables the given packages of one scope with a single
+ * settings write, and returns the sources that scope does not configure.
+ *
+ * An entry already in the requested state is left exactly as it is: enabling
+ * rewrites the entry to its bare source, so re-enabling a package that is only
+ * filtered would silently drop its resource filters.
+ */
+function setPackagesDisabled(
   settingsManager: SettingsManager,
-  source: string,
+  sources: readonly string[],
   scope: PluginScope,
   disabled: boolean,
-): boolean {
+): Set<string> {
   const current = scope === "project"
     ? settingsManager.getProjectSettings().packages ?? []
     : settingsManager.getGlobalSettings().packages ?? [];
+  const missing = new Set(sources);
   let changed = false;
   const next = current.map((entry): PackageSource => {
-    if (getPackageSource(entry) !== source) return entry;
+    const source = getPackageSource(entry);
+    if (!sources.includes(source)) return entry;
+    missing.delete(source);
+    if (isDisabledPackage(entry) === disabled) return entry;
     changed = true;
     if (disabled) {
       return {
@@ -87,12 +101,69 @@ function setPackageDisabled(
         themes: [],
       };
     }
-    return getPackageSource(entry);
+    return source;
   });
-  if (!changed) return false;
-  if (scope === "project") settingsManager.setProjectPackages(next);
-  else settingsManager.setPackages(next);
-  return true;
+  if (changed) {
+    if (scope === "project") settingsManager.setProjectPackages(next);
+    else settingsManager.setPackages(next);
+  }
+  return missing;
+}
+
+/**
+ * The bulk form of enable/disable behind the panel's "Enable all" /
+ * "Disable all". Each package gets its own result, so one the route refuses
+ * (an untrusted project, a package removed since the panel loaded) does not
+ * stop the rest.
+ *
+ * SettingsManager never throws a failed load or write: it skips the write,
+ * records the error, and `flush()` still resolves. Those errors are read back
+ * and charged to their scope, or an unreadable settings.json would be reported
+ * as a successful toggle.
+ */
+async function setPackageListDisabled(
+  settingsManager: SettingsManager,
+  packages: readonly { source: string; scope: PluginScope }[],
+  disabled: boolean,
+  projectTrusted: boolean,
+): Promise<PluginToggleResult[]> {
+  const errors = new Map<string, string>();
+  for (const scope of ["global", "project"] as const) {
+    const sources = packages.filter((pkg) => pkg.scope === scope).map((pkg) => pkg.source);
+    if (sources.length === 0) continue;
+    if (scope === "project" && !projectTrusted) {
+      for (const source of sources) {
+        errors.set(keyFor(source, scope), "Project resources must be trusted before modifying project plugins");
+      }
+      continue;
+    }
+    for (const source of setPackagesDisabled(settingsManager, sources, scope, disabled)) {
+      errors.set(keyFor(source, scope), "Package is not configured");
+    }
+  }
+  await settingsManager.flush();
+  const settingsErrors = new Map<string, string>();
+  for (const { scope, path, error } of settingsManager.drainErrors()) {
+    if (!settingsErrors.has(scope)) settingsErrors.set(scope, path ? `${path}: ${error.message}` : error.message);
+  }
+  return packages.map((pkg) => {
+    // A settings file that failed to load also reads as "not configured", so
+    // its error wins. An untrusted project is never loaded and records none.
+    const error = settingsErrors.get(pkg.scope) ?? errors.get(keyFor(pkg.source, pkg.scope));
+    return error ? { ...pkg, error } : { ...pkg };
+  });
+}
+
+function readPackageList(value: unknown): { source: string; scope: PluginScope }[] | null {
+  if (!Array.isArray(value)) return null;
+  const packages = new Map<string, { source: string; scope: PluginScope }>();
+  for (const item of value) {
+    const source = typeof item?.source === "string" ? item.source.trim() : "";
+    if (!source) return null;
+    const scope = readScope(item.scope);
+    packages.set(keyFor(source, scope), { source, scope });
+  }
+  return [...packages.values()];
 }
 
 function addCount(counts: PluginResourceCounts, kind: keyof PluginResourceCounts): void {
@@ -319,6 +390,8 @@ export async function GET(req: Request) {
 }
 
 // POST /api/plugins body: { action, source?, scope?, cwd }
+// enable/disable also take { packages: [{ source, scope }] } in place of
+// source/scope and add per-package `results` to the response.
 export async function POST(req: Request) {
   if (!isApiRequestAllowed(req)) {
     return NextResponse.json({ error: "Untrusted API request" }, { status: 403 });
@@ -332,6 +405,7 @@ export async function POST(req: Request) {
       action?: PluginAction;
       source?: string;
       scope?: PluginScope;
+      packages?: unknown;
       cwd?: string;
     };
     if (!body.cwd) return NextResponse.json({ error: "cwd required" }, { status: 400 });
@@ -346,6 +420,24 @@ export async function POST(req: Request) {
     const settingsManager = SettingsManager.create(body.cwd, agentDir, {
       projectTrusted: projectTrust.trusted,
     });
+
+    if (body.packages !== undefined) {
+      if (body.action !== "enable" && body.action !== "disable") {
+        return NextResponse.json({ error: "packages is only supported by enable and disable" }, { status: 400 });
+      }
+      const packages = readPackageList(body.packages);
+      if (!packages) {
+        return NextResponse.json({ error: "packages must be a list of { source, scope }" }, { status: 400 });
+      }
+      const results = await setPackageListDisabled(
+        settingsManager,
+        packages,
+        body.action === "disable",
+        projectTrust.trusted,
+      );
+      return NextResponse.json({ ...(await readPlugins(body.cwd)), results } satisfies PluginsBulkResponse);
+    }
+
     const scope = readScope(body.scope);
     if (scope === "project" && !projectTrust.trusted) {
       return NextResponse.json(
@@ -377,11 +469,11 @@ export async function POST(req: Request) {
       await packageManager.update(source);
     } else if (body.action === "disable") {
       if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      setPackageDisabled(settingsManager, source, scope, true);
+      setPackagesDisabled(settingsManager, [source], scope, true);
       await settingsManager.flush();
     } else if (body.action === "enable") {
       if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
-      setPackageDisabled(settingsManager, source, scope, false);
+      setPackagesDisabled(settingsManager, [source], scope, false);
       await settingsManager.flush();
     } else {
       return NextResponse.json({ error: `Unsupported action: ${body.action}` }, { status: 400 });
