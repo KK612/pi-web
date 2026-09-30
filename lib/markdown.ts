@@ -478,6 +478,52 @@ export const markdownRemarkPlugins: ReactMarkdownOptions["remarkPlugins"] = [
   remarkSplitAutolinkLiterals,
   remarkCurrencySafeMath,
 ];
+
+// User messages keep every typed line break, as the TUI shows them (#680). The
+// `.markdown-user-message p` pre-wrap rule only reaches paragraphs, so a soft
+// break in a tight list item ("1. question\nA. option") or a heading collapsed
+// into a space, and Chrome renders a lone `\r` as a space even under pre-wrap.
+// Every line ending in text therefore becomes a <br>. It is a custom node that
+// remark-rehype turns into a bare <br> through `data.hName`, not an mdast
+// `break`: remark-rehype follows that <br> with a "\n" text node, which the
+// pre-wrap rule renders as a second break, so hard breaks are swapped too. Code,
+// inline code, math and raw HTML are other node types and keep their text.
+interface MarkdownTreeNode {
+  type: string;
+  value?: string;
+  children?: MarkdownTreeNode[];
+  data?: { hName?: string };
+}
+
+const LINE_ENDING = /[ \t]*(?:\r\n|\r|\n)[ \t]*/;
+
+function lineBreakNode(): MarkdownTreeNode {
+  return { type: "lineBreak", data: { hName: "br" } };
+}
+
+function keepLineBreaks(parent: MarkdownTreeNode): void {
+  if (!parent.children) return;
+  parent.children = parent.children.flatMap((node) => {
+    if (node.type === "break") return [lineBreakNode()];
+    if (node.type !== "text" || !node.value) {
+      keepLineBreaks(node);
+      return [node];
+    }
+    return node.value.split(LINE_ENDING).flatMap((line, index) => [
+      ...(index > 0 ? [lineBreakNode()] : []),
+      ...(line ? [{ type: "text", value: line }] : []),
+    ]);
+  });
+}
+
+function remarkKeepLineBreaks() {
+  return (tree: MarkdownTreeNode) => keepLineBreaks(tree);
+}
+
+export const markdownUserRemarkPlugins: ReactMarkdownOptions["remarkPlugins"] = [
+  ...(markdownRemarkPlugins ?? []),
+  remarkKeepLineBreaks,
+];
 export const markdownPreviewRemarkPlugins: ReactMarkdownOptions["remarkPlugins"] = [
   [remarkFrontmatter, ["yaml"]],
   [remarkGfm, remarkGfmOptions],
