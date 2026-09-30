@@ -103,6 +103,7 @@ lib/
   file-access.ts       allowed file roots for /api/files and worktrees
   default-cwd.ts       dated ~/pi-cwd/YYYYMMDD path for "Use default directory"
   file-paths.ts        client/server path encoding helpers
+  file-tree-visibility.ts  which entries the file tree lists: git check-ignore, name-list fallback
   enabled-models.ts    pure minimal-edit engine for the `enabledModels` pattern list
   enabled-models-runtime.ts  SDK adapter: per-pattern resolution, provider kinds, settings IO
   markdown.ts          shared markdown helpers
@@ -229,6 +230,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 - `/api/cwd/validate` and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable. "Use default directory" is no exception: `/api/default-cwd` only creates `~/pi-cwd/YYYYMMDD`, and the sidebar selects it through `/api/cwd/validate` like any other directory.
 - Allowed roots are stored slash-normalized, but that is a Set-key convention, not a correctness requirement: `isPathWithinRoots()` (`lib/path-security.ts`, the single implementation behind `isFilePathAllowed()`) re-resolves and case-folds both sides, so either path form authorizes correctly. Keep that one implementation — it is the security boundary.
 - A UNC cwd (`\\host\share\dir`) must survive the `/api/files/[...path]` round-trip. `encodeFilePathForApi()` folds the `//` root into the first segment (`%2F%2Fhost`) because a literal `//` URL prefix is 308-normalized away before routing; `filePathFromApiSegments()` decodes it back. Never split UNC paths into segments and rejoin them — that silently turns `\\host\share` into the relative-looking `host/share` and every allow-check fails with 403.
+- What `type=list` leaves out is visibility, never access: hidden entries stay readable by path. `lib/file-tree-visibility.ts` asks one `git check-ignore --stdin` per listing, which already treats a tracked file, and a directory holding one, as not ignored — so a tracked `build/` is listed and an ignored directory with a force-added file shows just that file. `.git` and `.DS_Store` are always hidden. The fixed name list (`node_modules`, `dist`, `build`, …) applies only where Git has no view: outside a work tree, when git fails or times out, and inside a directory that is itself ignored with nothing tracked below it (otherwise a scratch dir under a dotfiles repo that ignores `*` would list empty). Names go to git as `./name`, since check-ignore rejects pathspec magic such as a leading `:(` for the whole batch, and the call passes `-c core.fsmonitor=false` because reading the index otherwise runs a hook configured by whatever repository the user just expanded.
 
 ### Plugins and skills
 - `/api/plugins` uses pi's `SettingsManager` + `DefaultPackageManager` for global/project package install, remove, update, enable, and disable. Disabling writes empty `extensions/skills/prompts/themes` arrays for that package entry.
