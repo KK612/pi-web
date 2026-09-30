@@ -333,6 +333,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
 
   // Session files can hold `\r\n` or lone `\r` line endings (#680). Chrome renders
   // a lone `\r` as a space even in the pre-wrap command-args and raw-text views.
+  // Copy uses this text too; the session file keeps the original endings.
   const content = (
     typeof message.content === "string"
       ? message.content

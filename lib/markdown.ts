@@ -496,6 +496,16 @@ interface MarkdownTreeNode {
 }
 
 const LINE_ENDING = /[ \t]*(?:\r\n|\r|\n)[ \t]*/;
+const PHRASING_BLOCK_TYPES = new Set(["paragraph", "heading", "tableCell"]);
+// Raw-text elements take everything up to their closing tag as text, and
+// rehype-raw leaves that state at the next element, so a <br> placed after an
+// unclosed `<textarea>` or `<script>` garbles or drops the rest of the block.
+const RAW_TEXT_OPEN_TAG = /^<(?:iframe|noembed|noframes|noscript|plaintext|script|style|textarea|title|xmp)(?=[\s/>]|$)/i;
+
+function opensRawTextElement(node: MarkdownTreeNode): boolean {
+  if (node.type === "html") return RAW_TEXT_OPEN_TAG.test(node.value ?? "");
+  return node.children?.some(opensRawTextElement) ?? false;
+}
 
 function lineBreakNode(): MarkdownTreeNode {
   return { type: "lineBreak", data: { hName: "br" } };
@@ -503,6 +513,9 @@ function lineBreakNode(): MarkdownTreeNode {
 
 function keepLineBreaks(parent: MarkdownTreeNode): void {
   if (!parent.children) return;
+  // Such a block keeps the default rendering: its paragraph newlines still
+  // show through the pre-wrap rule.
+  if (PHRASING_BLOCK_TYPES.has(parent.type) && opensRawTextElement(parent)) return;
   parent.children = parent.children.flatMap((node) => {
     if (node.type === "break") return [lineBreakNode()];
     if (node.type !== "text" || !node.value) {
