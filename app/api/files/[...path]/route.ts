@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import {
+  allowFileRoot,
   getAllowedFileRoots,
   isExistingFilePathAllowed,
   isFilePathAllowed,
 } from "@/lib/file-access";
+import { checkLinkedDirectoryApproval, withOutsideLinkTargets } from "@/lib/linked-directory";
 import {
   DOCX_PREVIEW_MAX_BYTES,
   IMAGE_PREVIEW_MAX_BYTES,
@@ -18,7 +20,7 @@ import {
 } from "@/lib/file-types";
 import { resolveDirentIsDirectory } from "@/lib/file-dirent";
 import { isFilePathReferencedBySession } from "@/lib/session-file-references";
-import { isApiRequestAllowed } from "@/lib/request-security";
+import { hasJsonContentType, isApiRequestAllowed } from "@/lib/request-security";
 import {
   inspectUploadTargets,
   parseUploadConflictStrategy,
@@ -110,6 +112,32 @@ async function getUploadDirectory(segments: string[]): Promise<
   return { directory: realDirectory };
 }
 
+// A directory link whose target is outside the allowed roots is listed but not
+// browsable. Allowing it is the operator's explicit choice, the same one as
+// selecting that directory as a workspace, and lasts until the server restarts.
+async function allowLinkedDirectory(
+  request: NextRequest,
+  segments: string[],
+): Promise<NextResponse> {
+  if (!hasJsonContentType(request)) {
+    return NextResponse.json({ error: "Content-Type must be application/json" }, { status: 415 });
+  }
+  const body = await request.json().catch(() => null) as { target?: unknown } | null;
+  if (typeof body?.target !== "string" || !body.target) {
+    return NextResponse.json({ error: "target must be the link target shown in the listing" }, { status: 400 });
+  }
+  const approval = checkLinkedDirectoryApproval(
+    filePathFromApiSegments(segments),
+    body.target,
+    await getAllowedFileRoots(),
+  );
+  if (!approval.ok) {
+    return NextResponse.json({ error: approval.error }, { status: approval.status });
+  }
+  if (!approval.alreadyAllowed) allowFileRoot(approval.target);
+  return NextResponse.json({ path: approval.target });
+}
+
 function parseUploadFileNames(value: unknown): string[] | null {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return null;
   return value;
@@ -125,10 +153,12 @@ export async function POST(
 
   try {
     const { path: segments } = await params;
+    const type = request.nextUrl.searchParams.get("type") ?? "upload";
+    if (type === "allow-link") return allowLinkedDirectory(request, segments);
+
     const uploadDirectory = await getUploadDirectory(segments);
     if ("response" in uploadDirectory) return uploadDirectory.response;
     const { directory } = uploadDirectory;
-    const type = request.nextUrl.searchParams.get("type") ?? "upload";
 
     if (type === "upload-check") {
       const body = await request.json().catch(() => null) as { fileNames?: unknown } | null;
@@ -646,7 +676,10 @@ export async function GET(
         return a.name.localeCompare(b.name);
       });
 
-    return NextResponse.json({ entries, path: filePath });
+    return NextResponse.json({
+      entries: withOutsideLinkTargets(filePath, entries, dirents, allowedRoots),
+      path: filePath,
+    });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });
   }

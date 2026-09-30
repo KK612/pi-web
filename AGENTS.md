@@ -101,6 +101,7 @@ lib/
   default-preferences.ts  write defaultModel/defaultThinkingLevel; detect project-level shadowing
   draft-store.ts       local draft persistence helpers
   file-access.ts       allowed file roots for /api/files and worktrees
+  linked-directory.ts  directory links that lead outside the allowed roots + the allow-link check
   default-cwd.ts       dated ~/pi-cwd/YYYYMMDD path for "Use default directory"
   file-paths.ts        client/server path encoding helpers
   enabled-models.ts    pure minimal-edit engine for the `enabledModels` pattern list
@@ -229,6 +230,7 @@ Newer pi emits `compaction_start` / `compaction_end`; older versions emitted `au
 - `/api/cwd/validate` and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable. "Use default directory" is no exception: `/api/default-cwd` only creates `~/pi-cwd/YYYYMMDD`, and the sidebar selects it through `/api/cwd/validate` like any other directory.
 - Allowed roots are stored slash-normalized, but that is a Set-key convention, not a correctness requirement: `isPathWithinRoots()` (`lib/path-security.ts`, the single implementation behind `isFilePathAllowed()`) re-resolves and case-folds both sides, so either path form authorizes correctly. Keep that one implementation — it is the security boundary.
 - A UNC cwd (`\\host\share\dir`) must survive the `/api/files/[...path]` round-trip. `encodeFilePathForApi()` folds the `//` root into the first segment (`%2F%2Fhost`) because a literal `//` URL prefix is 308-normalized away before routing; `filePathFromApiSegments()` decodes it back. Never split UNC paths into segments and rejoin them — that silently turns `\\host\share` into the relative-looking `host/share` and every allow-check fails with 403.
+- A directory link (symlink or Windows junction) is authorized by where it resolves, so one inside a root that leads outside every root is listed but refused beneath it (#748). Never authorize the lexical path instead: a link committed to a cloned repo would then expose `~/.ssh` or `/` without the operator doing anything. The listing reports such a link's target as `outsideLinkTarget`; the explorer shows it with an "Allow browsing" button that posts `?type=allow-link` with that target. `checkLinkedDirectoryApproval()` (`lib/linked-directory.ts`) requires the link to sit in a directory that is inside the roots after resolving links and to still point where the operator was shown, then the route `allowFileRoot()`s the target until the server restarts — exactly the grant `/api/cwd/validate` gives any directory, so the endpoint widens nothing a caller could not already reach.
 
 ### Plugins and skills
 - `/api/plugins` uses pi's `SettingsManager` + `DefaultPackageManager` for global/project package install, remove, update, enable, and disable. Disabling writes empty `extensions/skills/prompts/themes` arrays for that package entry.
