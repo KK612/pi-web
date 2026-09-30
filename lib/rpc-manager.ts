@@ -248,6 +248,8 @@ export class AgentSessionWrapper {
   private shutdownPromise: Promise<void> | null = null;
   private sessionShutdownEmitted = false;
   private forceShutdownOnIdle = false;
+  // The armed idle timer is the forced cleanup Stop scheduled.
+  private forcedIdleTimerArmed = false;
   private _alive = true;
 
   constructor(
@@ -457,14 +459,22 @@ export class AgentSessionWrapper {
   }
 
   private resetIdleTimer(): void {
-    if (this.idleTimer) clearTimeout(this.idleTimer);
-    if (!this._alive) return;
+    if (!this._alive) {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      return;
+    }
     if (!this.isRunning()) this.forceShutdownOnIdle = false;
+    // A stuck user reloads, reopens the session or presses Stop again, and
+    // each of those commands lands here. Moving the forced deadline for them
+    // would keep a run that Stop cannot unwind alive indefinitely.
+    if (this.forceShutdownOnIdle && this.forcedIdleTimerArmed) return;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
     // A resolved timeout of 0 disables idle shutdown, but a run that Stop could
     // not unwind is still reaped after the default delay; otherwise it stays
     // running until the server restarts (#656).
     const timeoutMs = SESSION_IDLE_TIMEOUT_MS
       || (this.forceShutdownOnIdle ? DEFAULT_SESSION_IDLE_TIMEOUT_MS : 0);
+    this.forcedIdleTimerArmed = timeoutMs !== 0 && this.forceShutdownOnIdle;
     if (timeoutMs === 0) return;
     this.idleTimer = setTimeout(() => {
       if (!this.forceShutdownOnIdle && (this.isRunning() || hasActiveSessionLivenessProvider({
