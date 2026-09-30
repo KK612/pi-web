@@ -258,9 +258,13 @@ export async function removeWorktree(cwd: string, worktreePath: string, force = 
   invalidateProjectCache();
 }
 
-/** Git may require a forced removal for dirty, locked, or submodule worktrees. */
+/**
+ * Git refuses to remove a dirty worktree, or one containing initialized
+ * submodules, without --force. A locked worktree needs a double force and is
+ * deliberately not matched: offering a single force there would just fail.
+ */
 export function worktreeRemovalRequiresForce(message: string): boolean {
-  return /contains modified or untracked files|is dirty|submodules?|locked worktree/i.test(message);
+  return /contains modified or untracked files|is dirty|containing submodules/i.test(message);
 }
 
 function extractGitError(error: unknown): string {
