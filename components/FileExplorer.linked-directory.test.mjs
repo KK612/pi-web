@@ -43,20 +43,20 @@ const linkedNode = {
 
 test("an expanded link that leaves the project names its target and offers to allow it", () => {
   const html = renderNode(linkedNode);
-  assert.match(html, /Links outside this project to \/elsewhere\/project/);
+  assert.match(html, /Links to \/elsewhere\/project, outside this project/);
   assert.match(html, /<button type="button" title="Browse \/elsewhere\/project until Pi Web restarts[^"]*"[^>]*>Allow browsing<\/button>/);
   assert.doesNotMatch(html, />empty</);
 });
 
 test("a collapsed link that leaves the project is marked on its row", () => {
   const html = renderNode(linkedNode, { open: false });
-  assert.match(html, /aria-label="Links outside this project to \/elsewhere\/project"/);
+  assert.match(html, /aria-label="Links to \/elsewhere\/project, outside this project"/);
   assert.doesNotMatch(html, /Allow browsing/);
 });
 
 test("ordinary directories render no link notice", () => {
   const html = renderNode({ ...linkedNode, outsideLinkTarget: undefined, loaded: true });
-  assert.doesNotMatch(html, /Links outside this project|Allow browsing/);
+  assert.doesNotMatch(html, /outside this project|Allow browsing/);
   assert.match(html, />empty</);
 });
 
@@ -72,4 +72,11 @@ test("allowing a link sends the target the operator was shown", () => {
   assert.match(source, /await allowOutsideLink\(node\.fullPath, pendingLinkTarget\);/);
   // A pending link is never listed: the server would only refuse it.
   assert.match(source, /if \(next && !loaded && !pendingLinkTarget\) loadChildren\(\);/);
+});
+
+test("a link that encloses the project or home folder warns and confirms before allowing", () => {
+  const html = renderNode({ ...linkedNode, outsideLinkTarget: "/", outsideLinkEncloses: true });
+  assert.match(html, /That folder contains this project or your home folder\./);
+  assert.doesNotMatch(renderNode(linkedNode), /contains this project/);
+  assert.match(source, /if \(node\.outsideLinkEncloses && !window\.confirm\(t\("files\.allowEnclosingLinkConfirm"/);
 });

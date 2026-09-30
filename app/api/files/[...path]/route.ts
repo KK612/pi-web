@@ -28,6 +28,7 @@ import {
 } from "@/lib/file-upload";
 import { parseFormDataWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { filePathFromApiSegments, samePath } from "@/lib/paths";
+import { hasParentDirectorySegment } from "@/lib/path-security";
 import { readTextPreviewChunk } from "@/lib/text-preview";
 
 const IGNORED_NAMES = new Set([
@@ -455,8 +456,10 @@ export async function GET(
     // Authorization collapses `..` lexically, but the filesystem applies it
     // after following links, so `link/../x` names a file beside the link's
     // target, outside the roots. URL parsing already drops real `..` segments;
-    // only an encoded slash inside a segment still carries one here.
-    if (filePath.split(/[\\/]/).includes("..")) {
+    // only an encoded slash inside a segment still carries one here. The
+    // existing-path check refuses them too, but a file referenced by the
+    // session skips that check.
+    if (hasParentDirectorySegment(filePath)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
     const rawType = request.nextUrl.searchParams.get("type") ?? "list";

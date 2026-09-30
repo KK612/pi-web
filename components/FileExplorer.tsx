@@ -24,6 +24,8 @@ interface FileEntry {
   modified: string;
   /** Where a directory link leads when that is outside the browsable roots. */
   outsideLinkTarget?: string;
+  /** That target contains the project or the home folder. */
+  outsideLinkEncloses?: boolean;
 }
 
 interface FileNode {
@@ -34,6 +36,7 @@ interface FileNode {
   children?: FileNode[];
   loaded?: boolean;
   outsideLinkTarget?: string;
+  outsideLinkEncloses?: boolean;
 }
 
 interface Props {
@@ -106,6 +109,7 @@ async function fetchEntries(dirPath: string): Promise<FileNode[]> {
     children: e.isDir ? [] : undefined,
     loaded: !e.isDir,
     outsideLinkTarget: e.outsideLinkTarget,
+    outsideLinkEncloses: e.outsideLinkEncloses,
   }));
 }
 
@@ -313,6 +317,11 @@ export function TreeNode({
   const handleAllowLink = useCallback(async (event: React.MouseEvent) => {
     event.stopPropagation();
     if (!pendingLinkTarget) return;
+    // A link to `/`, `~` or a parent of the project opens far more than a
+    // sibling folder, and a cloned repository can contain one.
+    if (node.outsideLinkEncloses && !window.confirm(t("files.allowEnclosingLinkConfirm", { target: pendingLinkTarget }))) {
+      return;
+    }
     setAllowingLink(true);
     setAllowLinkError(null);
     try {
@@ -324,7 +333,7 @@ export function TreeNode({
     } finally {
       setAllowingLink(false);
     }
-  }, [node.fullPath, pendingLinkTarget, loadChildren]);
+  }, [node.fullPath, node.outsideLinkEncloses, pendingLinkTarget, loadChildren, t]);
 
   return (
     <div>
@@ -498,6 +507,9 @@ export function TreeNode({
           }}
         >
           <span style={{ wordBreak: "break-all" }}>{t("files.outsideLink", { target: pendingLinkTarget })}</span>
+          {node.outsideLinkEncloses && (
+            <span style={{ color: "#f59e0b" }}>{t("files.outsideLinkEncloses")}</span>
+          )}
           <button
             type="button"
             onClick={handleAllowLink}

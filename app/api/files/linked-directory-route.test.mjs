@@ -24,6 +24,7 @@ const jiti = createJiti(import.meta.url, {
   moduleCache: false,
 });
 const { GET, POST } = await jiti.import("./[...path]/route.ts");
+const { GET: getFileIndex } = await jiti.import("../file-index/route.ts");
 const { allowFileRoot } = await jiti.import("../../../lib/file-access.ts");
 const { encodeFilePathForApi } = await jiti.import("../../../lib/file-paths.ts");
 const { NextRequest } = await jiti.import("next/server");
@@ -173,4 +174,22 @@ test("a `..` carried inside an encoded segment cannot climb out through a link",
   );
   assert.equal(response.status, 403);
   assert.deepEqual(await response.json(), { error: "Access denied" });
+});
+
+test("a cwd that climbs out through a link is refused by the other routes too", async (t) => {
+  const fixture = createHub(t);
+  if (!fixture) return;
+  const { hub, elsewhere } = fixture;
+  const beside = path.join(path.dirname(elsewhere), "beside-secret.txt");
+  fs.writeFileSync(beside, "outside");
+  t.after(() => fs.rmSync(beside, { force: true }));
+
+  // Query-string paths are not normalized by URL parsing, so `..` reaches the
+  // existing-path check, which must refuse it rather than read it as `hub`.
+  const cwd = `${hub}${path.sep}linked${path.sep}..`;
+  const response = await getFileIndex(new NextRequest(
+    `http://localhost/api/file-index?cwd=${encodeURIComponent(cwd)}`,
+    { headers: { host: "localhost" } },
+  ));
+  assert.equal(response.status, 403);
 });

@@ -1,4 +1,5 @@
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { isExistingPathWithinRoots, isPathWithinRoots, resolveRealRoots } from "./path-security";
 import { samePath } from "./paths";
@@ -19,6 +20,22 @@ export function getOutsideLinkTarget(linkPath: string, realRoots: Set<string>): 
 }
 
 /**
+ * Whether allowing `target` would also open the project or the home folder, as
+ * a link to `/`, `~` or a parent of the project would. Such a link can arrive
+ * with a cloned repository, so the explorer confirms before allowing it.
+ */
+function enclosesProjectOrHome(target: string, realRoots: Set<string>): boolean {
+  const enclosed = [...realRoots];
+  try {
+    enclosed.push(fs.realpathSync(os.homedir()));
+  } catch {
+    // No resolvable home folder to protect.
+  }
+  const targetRoot = new Set([target]);
+  return enclosed.some((candidate) => isPathWithinRoots(candidate, targetRoot));
+}
+
+/**
  * Add `outsideLinkTarget` to the listed directories that lead outside the
  * roots. The file routes authorize the resolved path, so such a link is listed
  * but everything beneath it is refused until the operator allows its target
@@ -31,14 +48,17 @@ export function withOutsideLinkTargets<T extends { name: string; isDir: boolean 
   entries: T[],
   dirents: Pick<fs.Dirent, "name" | "isDirectory">[],
   roots: Set<string>,
-): Array<T & { outsideLinkTarget?: string }> {
+): Array<T & { outsideLinkTarget?: string; outsideLinkEncloses?: true }> {
   const statDirectories = new Set(dirents.filter((d) => !d.isDirectory()).map((d) => d.name));
   let realRoots: Set<string> | undefined;
   return entries.map((entry) => {
     if (!entry.isDir || !statDirectories.has(entry.name)) return entry;
     realRoots ??= resolveRealRoots(roots);
     const outsideLinkTarget = getOutsideLinkTarget(path.join(directory, entry.name), realRoots);
-    return outsideLinkTarget ? { ...entry, outsideLinkTarget } : entry;
+    if (!outsideLinkTarget) return entry;
+    return enclosesProjectOrHome(outsideLinkTarget, realRoots)
+      ? { ...entry, outsideLinkTarget, outsideLinkEncloses: true as const }
+      : { ...entry, outsideLinkTarget };
   });
 }
 
