@@ -402,6 +402,51 @@ function readScope(scope: unknown): PluginScope {
   return scope === "project" ? "project" : "global";
 }
 
+function resolveLocalAbsoluteForScope(source: string, scope: PluginScope, cwd: string, agentDir: string): string | null {
+  const trimmed = source.trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("npm:") || lower.startsWith("git:") || /^[a-z][a-z0-9+.-]*:\/\//.test(trimmed)) {
+    return null;
+  }
+
+  let baseDir: string;
+  if (scope === "project") {
+    baseDir = cwd;
+  } else {
+    baseDir = agentDir;
+  }
+
+  const resolved = isAbsolute(trimmed) ? resolve(trimmed) : resolve(join(baseDir, trimmed));
+  return normalize(resolved);
+}
+
+function findConfiguredSourceMatch(
+  settingsManager: SettingsManager,
+  agentDir: string,
+  cwd: string,
+  source: string,
+  scopeHint?: PluginScope,
+): string | null {
+  const scopes: PluginScope[] = scopeHint ? [scopeHint] : ["global", "project"];
+  const requested = resolveLocalAbsoluteForScope(source, scopeHint ?? "global", cwd, agentDir);
+  if (!requested) return null;
+
+  for (const scope of scopes) {
+    const packages = scope === "project"
+      ? settingsManager.getProjectSettings().packages ?? []
+      : settingsManager.getGlobalSettings().packages ?? [];
+    for (const entry of packages) {
+      const stored = getPackageSource(entry);
+      const storedAbs = resolveLocalAbsoluteForScope(stored, scope, cwd, agentDir);
+      if (storedAbs && storedAbs === requested) {
+        return stored;
+      }
+    }
+  }
+  return null;
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const cwd = searchParams.get("cwd");
@@ -458,9 +503,13 @@ export async function POST(req: Request) {
       if (!packages) {
         return NextResponse.json({ error: "packages must be a list of { source, scope }" }, { status: 400 });
       }
+      const normalizedPackages = packages.map((pkg) => {
+        const match = findConfiguredSourceMatch(settingsManager, agentDir, body.cwd, pkg.source, pkg.scope);
+        return match ? { ...pkg, source: match } : pkg;
+      });
       const results = await setPackageListDisabled(
         settingsManager,
-        packages,
+        normalizedPackages,
         body.action === "disable",
         projectTrust.trusted,
       );
@@ -479,8 +528,13 @@ export async function POST(req: Request) {
       agentDir,
       settingsManager,
     });
-    const source = body.source?.trim();
+    let source = body.source?.trim();
     const local = scope === "project";
+
+    if (source) {
+      const match = findConfiguredSourceMatch(settingsManager, agentDir, body.cwd, source, scope);
+      if (match) source = match;
+    }
 
     if (body.action === "install") {
       if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
@@ -495,7 +549,11 @@ export async function POST(req: Request) {
           { status: 403 },
         );
       }
-      await packageManager.update(source);
+      if (source) {
+        await packageManager.update(source);
+      } else {
+        await packageManager.update(undefined as unknown as string);
+      }
     } else if (body.action === "disable") {
       if (!source) return NextResponse.json({ error: "source required" }, { status: 400 });
       setPackagesDisabled(settingsManager, [source], scope, true);
