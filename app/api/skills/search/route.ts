@@ -60,22 +60,24 @@ async function searchSkillsApi(query: string, limit: number): Promise<SkillSearc
   if (!res.ok) throw new Error(`skills.sh search failed: HTTP ${res.status}`);
 
   const data = (await res.json()) as SkillsApiResponse;
-  return (data.skills ?? [])
-    .map((skill) => {
-      const name = skill.name?.trim();
-      const source = skill.source?.trim();
-      const slug = skill.id?.trim();
-      if (!name || (!source && !slug)) return null;
+  return dedupeByPackage(
+    (data.skills ?? [])
+      .map((skill) => {
+        const name = skill.name?.trim();
+        const source = skill.source?.trim();
+        const slug = skill.id?.trim();
+        if (!name || (!source && !slug)) return null;
 
-      const pkg = `${source || slug}@${name}`;
-      return {
-        package: pkg,
-        installs: formatInstalls(skill.installs),
-        url: slug ? `${SEARCH_API_BASE}/${slug}` : "",
-      };
-    })
-    .filter((skill): skill is SkillSearchResult => skill !== null)
-    .sort((a, b) => parseInstallCount(b.installs) - parseInstallCount(a.installs));
+        const pkg = `${source || slug}@${name}`;
+        return {
+          package: pkg,
+          installs: formatInstalls(skill.installs),
+          url: slug ? `${SEARCH_API_BASE}/${slug}` : "",
+        };
+      })
+      .filter((skill): skill is SkillSearchResult => skill !== null)
+      .sort((a, b) => parseInstallCount(b.installs) - parseInstallCount(a.installs)),
+  );
 }
 
 function parseInstallCount(installs: string): number {
@@ -85,6 +87,31 @@ function parseInstallCount(installs: string): number {
   if (!Number.isFinite(value)) return 0;
   const multiplier = match[2] === "B" ? 1_000_000_000 : match[2] === "M" ? 1_000_000 : match[2] === "K" ? 1_000 : 1;
   return value * multiplier;
+}
+
+/**
+ * `package` (`source@name`) is what the install command consumes, so two rows
+ * sharing one are the same installable skill. skills.sh lists such a pair when a
+ * repo's slug was renamed: the name stays put while a stale slug lingers beside
+ * the current one, so the search returns e.g. `.../design-system` and
+ * `.../ckmdesign-system` as two entries of `owner/repo@design-system`. Keeping the
+ * higher install count also keeps the current slug, since the renamed entry is
+ * the more-installed one; a dropped duplicate would otherwise render as a second
+ * row with the same skill name, which React also rejects as a duplicate key.
+ *
+ * Callers sort by install count first, so "first wins" already means "most
+ * installed wins" — but compare explicitly so the rule survives a caller that
+ * does not sort.
+ */
+function dedupeByPackage(results: SkillSearchResult[]): SkillSearchResult[] {
+  const best = new Map<string, SkillSearchResult>();
+  for (const result of results) {
+    const existing = best.get(result.package);
+    if (!existing || parseInstallCount(result.installs) > parseInstallCount(existing.installs)) {
+      best.set(result.package, result);
+    }
+  }
+  return [...best.values()];
 }
 
 // POST /api/skills/search  body: { query: string, limit?: number }
@@ -103,13 +130,13 @@ export async function POST(req: Request) {
         env: { ...process.env, FORCE_COLOR: "0" },
       });
 
-      const results = parseSearchOutput(stdout + stderr).slice(0, limit);
+      const results = dedupeByPackage(parseSearchOutput(stdout + stderr)).slice(0, limit);
       return NextResponse.json({ results });
     }
   } catch (e: unknown) {
     const err = e as { stdout?: string; stderr?: string; message?: string };
     const raw = (err.stdout ?? "") + (err.stderr ?? "");
-    const results = raw ? parseSearchOutput(raw) : [];
+    const results = raw ? dedupeByPackage(parseSearchOutput(raw)) : [];
     if (results.length > 0) return NextResponse.json({ results });
     return NextResponse.json({ error: err.message ?? String(e) }, { status: 500 });
   }
