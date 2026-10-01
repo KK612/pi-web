@@ -22,6 +22,11 @@ import {
   buildEntriesFromFiles, buildAtInsertText, extractAtQuery, filterFileEntries,
   type AtQueryMatch, type FileIndexEntry,
 } from "@/lib/file-fuzzy";
+import {
+  MAX_UPLOAD_FILE_BYTES,
+  uploadFilesToWorkspace,
+  uploadMentionPath,
+} from "@/lib/file-upload-client";
 import { getMarkdownListContinuation } from "@/lib/markdown-list-continuation";
 import { FolderIcon, getFileIcon } from "./FileIcons";
 import { ImagePreview } from "./ImagePreview";
@@ -634,6 +639,34 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
   valueRef.current = value;
   attachedImagesRef.current = attachedImages;
 
+  // Inserts at the caret with surrounding spacing, then restores the caret after it.
+// Shared by the imperative handle and by attachment handling, which has to write
+// text into the composer without going through the handle.
+const insertTextAtCursor = useCallback((text: string) => {
+    const ta = textareaRef.current;
+    if (!ta) {
+      setValue((v) => v + (v ? " " : "") + text);
+      return;
+    }
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? ta.value.length;
+    const before = ta.value.slice(0, start);
+    const after = ta.value.slice(end);
+    const sep = before.length > 0 && !before.endsWith(" ") ? " " : "";
+    const newVal = before + sep + text + after;
+    valueRef.current = newVal;
+    setValue(newVal);
+    setAtQuery(null);
+    requestAnimationFrame(() => {
+      if (!ta) return;
+      const pos = start + sep.length + text.length;
+      ta.setSelectionRange(pos, pos);
+      ta.focus();
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    });
+  }, []);
+
   useImperativeHandle(ref, () => ({
     insertIfEmpty(text: string) {
       const ta = textareaRef.current;
@@ -787,28 +820,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       });
     },
     insertText(text: string) {
-      const ta = textareaRef.current;
-      if (!ta) {
-        setValue((v) => v + (v ? " " : "") + text);
-        return;
-      }
-      const start = ta.selectionStart ?? ta.value.length;
-      const end = ta.selectionEnd ?? ta.value.length;
-      const before = ta.value.slice(0, start);
-      const after = ta.value.slice(end);
-      const sep = before.length > 0 && !before.endsWith(" ") ? " " : "";
-      const newVal = before + sep + text + after;
-      valueRef.current = newVal;
-      setValue(newVal);
-      setAtQuery(null);
-      requestAnimationFrame(() => {
-        if (!ta) return;
-        const pos = start + sep.length + text.length;
-        ta.setSelectionRange(pos, pos);
-        ta.focus();
-        ta.style.height = "auto";
-        ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-      });
+      insertTextAtCursor(text);
     },
     addImages(files: File[]) {
       processImageFiles(files);
@@ -817,33 +829,58 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   const processImageFiles = useCallback(async (files: File[]) => {
     if (compact) return;
+    const isImage = (f: File) => f.type.startsWith("image/");
     const remaining = Math.max(
       0,
       MAX_ATTACHED_IMAGES - attachedImagesRef.current.length - pendingImageCountRef.current,
     );
     const imageFiles = files
-      .filter((f) => f.type.startsWith("image/") && f.size <= MAX_ATTACHED_IMAGE_BYTES)
+      .filter((f) => isImage(f) && f.size <= MAX_ATTACHED_IMAGE_BYTES)
       .slice(0, remaining);
-    if (!imageFiles.length) return;
-    pendingImageCountRef.current += imageFiles.length;
-    try {
-      const newImages = await Promise.all(
-        imageFiles.map(async (file) => ({
-          ...await compressImageFile(file),
-          previewUrl: URL.createObjectURL(file),
-        }))
-      );
-      setAttachedImages((prev) => {
-        const accepted = newImages.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - prev.length));
-        newImages.slice(accepted.length).forEach(revokeImagePreview);
-        const next = [...prev, ...accepted];
-        attachedImagesRef.current = next;
-        return next;
-      });
-    } finally {
-      pendingImageCountRef.current -= imageFiles.length;
+    // Anything that is not an image is sent to the workspace and referenced with
+    // an @-mention. Oversized files are dropped here so the batch still succeeds
+    // for the rest instead of failing on the server's 25MB ceiling.
+    const documentFiles = files.filter((f) => !isImage(f) && f.size <= MAX_UPLOAD_FILE_BYTES);
+
+    if (imageFiles.length) {
+      pendingImageCountRef.current += imageFiles.length;
+      try {
+        const newImages = await Promise.all(
+          imageFiles.map(async (file) => ({
+            ...await compressImageFile(file),
+            previewUrl: URL.createObjectURL(file),
+          }))
+        );
+        setAttachedImages((prev) => {
+          const accepted = newImages.slice(0, Math.max(0, MAX_ATTACHED_IMAGES - prev.length));
+          newImages.slice(accepted.length).forEach(revokeImagePreview);
+          const next = [...prev, ...accepted];
+          attachedImagesRef.current = next;
+          return next;
+        });
+      } finally {
+        pendingImageCountRef.current -= imageFiles.length;
+      }
     }
-  }, [compact]);
+
+    // Uploading needs a workspace to write into. Without one (a brand new session
+    // with no directory yet) there is nowhere to put the file, so say so rather
+    // than failing a request that cannot succeed.
+    if (documentFiles.length) {
+      if (!cwd) {
+        console.warn("[pi-web] dropping non-image attachments: the session has no working directory");
+        return;
+      }
+      try {
+        const { uploaded, errors } = await uploadFilesToWorkspace(cwd, documentFiles);
+        for (const { name, error } of errors) console.error(`[pi-web] upload failed for ${name}: ${error}`);
+        if (!uploaded.length) return;
+        insertTextAtCursor(uploaded.map((name) => uploadMentionPath(name)).join(" "));
+      } catch (error) {
+        console.error("[pi-web] file upload failed:", error);
+      }
+    }
+  }, [compact, cwd, insertTextAtCursor]);
 
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => {
@@ -1632,7 +1669,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
       {!compact && <input
         ref={fileInputRef}
         type="file"
-        accept="image/*"
+        accept="*"
         multiple
         style={{ display: "none" }}
         onChange={(e) => {

@@ -69,8 +69,26 @@ function parseFileRequestType(value: string): FileRequestType | null {
   return FILE_REQUEST_TYPE_SET.has(value) ? (value as FileRequestType) : null;
 }
 
-async function getUploadDirectory(segments: string[]): Promise<
-  { directory: string } | { response: NextResponse }
+// Attachments the composer sends as files rather than images land here, relative
+// to the workspace. It is pi-web's own scratch space, so the route creates it.
+const DEFAULT_UPLOAD_SUBDIR = ".pi-web/uploads";
+
+/**
+ * Accepts only a plain relative subdirectory. A query parameter is attacker
+ * controlled, so `..`, an absolute path, or a NUL would otherwise let a caller
+ * aim the write outside the workspace the caller was authorized for.
+ */
+function parseUploadSubdir(value: string | null): string | null {
+  const candidate = value ?? DEFAULT_UPLOAD_SUBDIR;
+  if (!candidate || candidate.includes("\0")) return null;
+  if (path.isAbsolute(candidate) || /^[a-zA-Z]:/.test(candidate)) return null;
+  const segments = candidate.split(/[\\/]+/);
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  return segments.join(path.sep);
+}
+
+async function getUploadDirectory(segments: string[], subdir: string): Promise<
+  { target: string } | { response: NextResponse }
 > {
   const directory = filePathFromApiSegments(segments);
   const allowedRoots = await getAllowedFileRoots();
@@ -103,7 +121,22 @@ async function getUploadDirectory(segments: string[]): Promise<
     return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
   }
 
-  return { directory: realDirectory };
+  // The subdirectory does not exist yet on first use, so it cannot be
+  // realpath'd before the mkdir. Resolve the deepest ancestor that does exist and
+  // re-check it: that catches `.pi-web` being a symlink out of the workspace,
+  // which lexical checks on the unresolved path would miss.
+  const target = path.join(realDirectory, subdir);
+  let existing = target;
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    existing = parent;
+  }
+  if (!isFilePathAllowed(fs.realpathSync(existing), realRoots)) {
+    return { response: NextResponse.json({ error: "Access denied" }, { status: 403 }) };
+  }
+
+  return { target };
 }
 
 // A directory link whose target is outside the allowed roots is listed but not
@@ -150,9 +183,14 @@ export async function POST(
     const type = request.nextUrl.searchParams.get("type") ?? "upload";
     if (type === "allow-link") return allowLinkedDirectory(request, segments);
 
-    const uploadDirectory = await getUploadDirectory(segments);
+    const subdir = parseUploadSubdir(request.nextUrl.searchParams.get("subdir"));
+    if (!subdir) {
+      return NextResponse.json({ error: "Invalid upload subdirectory" }, { status: 400 });
+    }
+
+    const uploadDirectory = await getUploadDirectory(segments, subdir);
     if ("response" in uploadDirectory) return uploadDirectory.response;
-    const { directory } = uploadDirectory;
+    const { target } = uploadDirectory;
 
     if (type === "upload-check") {
       const body = await request.json().catch(() => null) as { fileNames?: unknown } | null;
@@ -164,7 +202,7 @@ export async function POST(
       if (validationError) {
         return NextResponse.json({ error: validationError }, { status: 400 });
       }
-      return NextResponse.json(inspectUploadTargets(directory, fileNames));
+      return NextResponse.json(inspectUploadTargets(target, fileNames));
     }
 
     if (type !== "upload") {
@@ -198,7 +236,11 @@ export async function POST(
       return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
-    const inspection = inspectUploadTargets(directory, fileNames);
+    // Created here rather than in getUploadDirectory so a rejected upload never
+    // leaves an empty directory behind in the workspace.
+    await fs.promises.mkdir(target, { recursive: true });
+
+    const inspection = inspectUploadTargets(target, fileNames);
     if (strategy === "error" && inspection.conflicts.length > 0) {
       return NextResponse.json({
         error: "One or more files already exist",
@@ -214,7 +256,7 @@ export async function POST(
     const errors: Array<{ name: string; error: string }> = [];
 
     for (const file of files) {
-      const destination = path.join(directory, file.name);
+      const destination = path.join(target, file.name);
       if (conflictSet.has(file.name) && strategy === "skip") {
         skipped.push(file.name);
         continue;
